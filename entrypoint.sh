@@ -11,9 +11,6 @@ echo "   Wallet: ${PEARL_WALLET_ADDRESS:-NOT SET}"
 echo "   GPU Memory Utilization: ${PEARL_GPU_UTIL:-0.9}"
 echo "   Max Model Length: ${PEARL_MAX_MODEL_LEN:-8192}"
 
-# Start SSH daemon for remote debugging
-/usr/sbin/sshd 2>/dev/null || true
-
 # Validate required env vars
 if [ -z "$PEARL_WALLET_ADDRESS" ]; then
     echo "❌ ERROR: PEARL_WALLET_ADDRESS is required!"

@@ -83,12 +83,8 @@ FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04
 
 # Runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libc-dev curl jq openssh-server \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /run/sshd \
-    && echo 'root:pearl' | chpasswd \
-    && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    gcc libc-dev curl jq \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -110,8 +106,8 @@ RUN chmod +x /app/entrypoint.sh
 ENV PATH="/usr/local/venv/bin:${PATH}" \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/venv/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH:-}
 
-# Ports: vLLM API, Miner RPC, Gateway metrics, SSH
-EXPOSE 8000 8337 8339 22
+# Ports: vLLM API, Pearl P2P, Gateway metrics
+EXPOSE 8000 8337 8339
 
 # Volumes for persistent data
 VOLUME ["/app/chain-data", "/root/.cache/huggingface"]
