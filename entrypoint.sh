@@ -193,13 +193,13 @@ VLLM_PID=$!
 # Step 4: Wait for vLLM to be ready, then start request worker
 # ============================================================
 echo "⏳ Waiting for vLLM to load model and become ready..."
-for i in $(seq 1 600); do
+for i in $(seq 1 1800); do
     if curl -s http://localhost:8000/health > /dev/null 2>&1; then
         echo "✅ vLLM is ready! Starting mining worker..."
         break
     fi
-    if [ $i -eq 600 ]; then
-        echo "❌ vLLM failed to start after 10 minutes"
+    if [ $i -eq 1800 ]; then
+        echo "❌ vLLM failed to start after 30 minutes"
         exit 1
     fi
     # Print progress every 30s
