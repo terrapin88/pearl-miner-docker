@@ -164,6 +164,16 @@ DP_SIZE="${PEARL_DP_SIZE:-$GPU_COUNT}"
 # Critical: disable deep gemm (conflicts with Pearl's NoisyGEMM)
 export VLLM_USE_DEEP_GEMM=0
 
+# OPTIMIZATION: Allow CUDA graphs for non-mining layers (0-39)
+# Set PEARL_ENFORCE_EAGER=1 to disable CUDA graphs if mining breaks
+if [ "${PEARL_ENFORCE_EAGER:-0}" = "1" ]; then
+    EAGER_FLAG="--enforce-eager"
+    echo "🔧 CUDA graphs disabled (enforce-eager mode)"
+else
+    EAGER_FLAG=""
+    echo "🔧 CUDA graphs enabled (faster non-mining layers)"
+fi
+
 # Auto-detect VRAM and adjust max_model_len for H100 (80GB) vs H200 (141GB)
 if [ -z "$PEARL_MAX_MODEL_LEN" ]; then
     VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
@@ -198,10 +208,10 @@ vllm serve pearl-ai/Llama-3.3-70B-Instruct-pearl \
     --port 8000 \
     --max-model-len "$PEARL_MAX_MODEL_LEN" \
     --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.9}" \
-    --enforce-eager \
+    $EAGER_FLAG \
     --data-parallel-size "$DP_SIZE" \
     --no-enable-prefix-caching \
-    --no-enable-chunked-prefill \
+    --max-num-seqs "${PEARL_MAX_SEQS:-64}" \
     &
 VLLM_PID=$!
 
