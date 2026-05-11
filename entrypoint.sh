@@ -209,8 +209,8 @@ if [ -z "$PEARL_MAX_MODEL_LEN" ]; then
         # H100 80GB — tight fit, use shorter context + higher memory util
         PEARL_MAX_MODEL_LEN=4096
         PEARL_GPU_UTIL="${PEARL_GPU_UTIL:-0.95}"
-        # H100 context is 4096 — word_list=1400 (~2600 tokens) would overflow!
-        PEARL_WORD_LIST="${PEARL_WORD_LIST:-700}"
+        # H100 context is 4096. Calibrated: 928 words ≈ 3072 tokens (24 tiles, fits in 4096)
+        PEARL_WORD_LIST="${PEARL_WORD_LIST:-928}"
         echo "🔧 H100 detected (${VRAM_MB}MB) — using max_model_len=4096, gpu_util=0.95, word_list=${PEARL_WORD_LIST}"
     else
         # H200 141GB — plenty of room
