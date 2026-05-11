@@ -11,6 +11,45 @@ echo "   Wallet: ${PEARL_WALLET_ADDRESS:-NOT SET}"
 echo "   GPU Memory Utilization: ${PEARL_GPU_UTIL:-0.9}"
 echo "   Max Model Length: ${PEARL_MAX_MODEL_LEN:-8192}"
 
+# ============================================================
+# Persistent logging + block watcher for attribution
+# ============================================================
+PEARL_LOG="/app/pearl_combined.log"
+touch "$PEARL_LOG"
+
+# Duplicate ALL output to persistent log AND stdout (so vastai logs still works)
+exec > >(tee -a "$PEARL_LOG") 2>&1
+
+# Auto-detect Vast.ai machine info from environment
+export VASTAI_MACHINE_ID="${VAST_CONTAINERLABEL:-unknown}"
+export VASTAI_INSTANCE_ID="${CONTAINER_ID:-unknown}"
+export GPU_TYPE=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+export GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
+
+# Start block watcher in background (fires webhook on "Block found")
+if [ -f /app/block_watcher.sh ]; then
+    chmod +x /app/block_watcher.sh
+    /app/block_watcher.sh >> "$PEARL_LOG" 2>&1 &
+    WATCHER_PID=$!
+    echo "👁️  Block watcher started (PID=$WATCHER_PID)"
+fi
+
+# ============================================================
+# GPU Performance Tuning
+# ============================================================
+echo "⚡ Tuning GPU performance..."
+# Persistence mode — keeps driver loaded, eliminates cold-start latency
+nvidia-smi -pm 1 2>/dev/null || true
+# Lock clocks to maximum sustained frequency (prevents thermal throttling oscillation)
+# H100 SXM: 1620-1980 MHz GPU, H200: similar range
+nvidia-smi -lgc 1200,2100 2>/dev/null || true
+# CUDA optimizations
+export CUDA_DEVICE_MAX_CONNECTIONS=8
+export CUDA_MODULE_LOADING=LAZY
+export TOKENIZERS_PARALLELISM=false
+# Disable DeepGEMM (conflicts with NoisyGEMM)
+export VLLM_USE_DEEP_GEMM=0
+
 # Validate required env vars
 if [ -z "$PEARL_WALLET_ADDRESS" ]; then
     echo "❌ ERROR: PEARL_WALLET_ADDRESS is required!"
@@ -161,8 +200,7 @@ fi
 # Set data parallelism based on GPU count
 DP_SIZE="${PEARL_DP_SIZE:-$GPU_COUNT}"
 
-# Critical: disable deep gemm (conflicts with Pearl's NoisyGEMM)
-export VLLM_USE_DEEP_GEMM=0
+# Critical: disable deep gemm (conflicts with Pearl's NoisyGEMM) — set earlier in GPU tuning
 
 # Auto-detect VRAM and adjust max_model_len for H100 (80GB) vs H200 (141GB)
 if [ -z "$PEARL_MAX_MODEL_LEN" ]; then
@@ -202,11 +240,15 @@ vllm serve pearl-ai/Llama-3.3-70B-Instruct-pearl \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len "$PEARL_MAX_MODEL_LEN" \
-    --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.9}" \
+    --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.95}" \
     --enforce-eager \
     --data-parallel-size "$DP_SIZE" \
     --no-enable-prefix-caching \
-    --max-num-seqs "${PEARL_MAX_SEQS:-64}" \
+    --max-num-seqs "${PEARL_MAX_SEQS:-256}" \
+    --max-num-batched-tokens "${PEARL_MAX_BATCHED_TOKENS:-32768}" \
+    --disable-log-stats \
+    --disable-log-requests \
+    --uvicorn-log-level warning \
     &
 VLLM_PID=$!
 

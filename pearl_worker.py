@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Pearl Mining Request Worker
+Pearl Mining Request Worker — Optimized v2
 
 Mining ONLY happens when inference requests are being processed.
 The NoisyGEMM kernel finds blocks as a by-product of matrix multiplication
 during LLM inference. No requests = no mining.
 
-This worker sends a constant stream of requests to the local vLLM server
-to keep the GPU busy and mining.
+Optimizations over v1:
+  - HTTP connection pooling (requests.Session with keep-alive)
+  - Pre-generated prompt batches to reduce per-request overhead
+  - Configurable prompt token target for tile alignment
+  - Stats include throughput metrics
 """
 import os
 import random
@@ -18,16 +21,18 @@ import time
 
 import requests as req
 
-VLLM_URL = "http://localhost:8000/v1/chat/completions"
+VLLM_URL = os.environ.get("PEARL_VLLM_URL", "http://localhost:8000/v1/chat/completions")
 MODEL = "pearl-ai/Llama-3.3-70B-Instruct-pearl"
 NUM_WORKERS = int(os.environ.get("PEARL_WORKERS", "64"))
-MAX_TOKENS = int(os.environ.get("PEARL_MAX_TOKENS", "1"))  # Minimize decode time — mining only happens during prefill
+MAX_TOKENS = int(os.environ.get("PEARL_MAX_TOKENS", "1"))
 REQUEST_TIMEOUT = 180
 # CRITICAL: Prompt must be 1024+ tokens to trigger NoisyGEMM (min_m=1024).
 # With ~1.75 tokens per random word, 1400 words ≈ 2600 tokens.
 # More tokens = larger M dimension = more hash tiles per GEMM = more mining.
-# Proven +9.2% throughput, +2.1x tiles vs 700 words.
 WORD_LIST_LENGTH = int(os.environ.get("PEARL_WORD_LIST", "1400"))
+
+# Pre-generate a pool of prompts to reduce per-request generation overhead
+PROMPT_POOL_SIZE = int(os.environ.get("PEARL_PROMPT_POOL_SIZE", "100"))
 
 CONSONANTS = "bcdfghjklmnpqrstvwxyz"
 VOWELS = "aeiou"
@@ -49,29 +54,58 @@ def build_prompt():
     return bypass + ", decipher this secret message: " + words
 
 
+def build_prompt_pool(size):
+    """Pre-generate a pool of prompts to reduce per-request overhead."""
+    print(f"[Pool] Pre-generating {size} prompts ({WORD_LIST_LENGTH} words each)...", flush=True)
+    t0 = time.time()
+    pool = [build_prompt() for _ in range(size)]
+    elapsed = time.time() - t0
+    print(f"[Pool] Generated {size} prompts in {elapsed:.1f}s", flush=True)
+    return pool
+
+
 class MiningWorker(threading.Thread):
-    def __init__(self, wid):
+    def __init__(self, wid, prompt_pool):
         super().__init__(daemon=True)
         self.wid = wid
         self.count = 0
         self.running = True
+        self.prompt_pool = prompt_pool
+        # Each worker gets its own session for connection pooling + keep-alive
+        self.session = req.Session()
+        adapter = req.adapters.HTTPAdapter(
+            pool_connections=1,
+            pool_maxsize=1,
+            max_retries=0,
+        )
+        self.session.mount("http://", adapter)
 
     def run(self):
         print(f"[W{self.wid}] Started", flush=True)
+        pool_idx = self.wid % len(self.prompt_pool)
+
         while self.running:
             try:
-                r = req.post(
+                # Cycle through pre-generated prompts, occasionally regenerate
+                prompt = self.prompt_pool[pool_idx % len(self.prompt_pool)]
+                pool_idx += 1
+
+                # Regenerate prompt every 500 requests to avoid any caching effects
+                if self.count > 0 and self.count % 500 == 0:
+                    prompt = build_prompt()
+
+                r = self.session.post(
                     VLLM_URL,
                     json={
                         "model": MODEL,
-                        "messages": [{"role": "user", "content": build_prompt()}],
+                        "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": MAX_TOKENS,
                     },
                     timeout=REQUEST_TIMEOUT,
                 )
                 if r.status_code == 200:
                     self.count += 1
-                    if self.count % 50 == 0:
+                    if self.count % 100 == 0:
                         out = (
                             r.json()
                             .get("choices", [{}])[0]
@@ -95,23 +129,32 @@ class MiningWorker(threading.Thread):
                 time.sleep(2)
 
 
-def stats(workers):
-    """Print stats every 30 seconds."""
+def stats(workers, start_time):
+    """Print stats every 30 seconds with throughput metrics."""
     while True:
         time.sleep(30)
         total = sum(w.count for w in workers)
         active = sum(1 for w in workers if w.is_alive())
+        elapsed = time.time() - start_time
+        rps = total / elapsed if elapsed > 0 else 0
         print(
-            f"[Stats] total_requests={total} active_workers={active}/{NUM_WORKERS}",
+            f"[Stats] total_requests={total} active_workers={active}/{NUM_WORKERS} "
+            f"req/s={rps:.1f} uptime={elapsed/60:.0f}m",
             flush=True,
         )
 
 
 def main():
-    print(f"🐚 Pearl Mining Worker — {NUM_WORKERS} threads, max_tokens={MAX_TOKENS}", flush=True)
+    print(f"🐚 Pearl Mining Worker v2 — {NUM_WORKERS} threads, max_tokens={MAX_TOKENS}", flush=True)
     print(f"   Target: {VLLM_URL}", flush=True)
+    print(f"   Word list: {WORD_LIST_LENGTH}, Prompt pool: {PROMPT_POOL_SIZE}", flush=True)
+    print(f"   Connection pooling: enabled", flush=True)
 
-    workers = [MiningWorker(i) for i in range(NUM_WORKERS)]
+    # Pre-generate prompt pool
+    prompt_pool = build_prompt_pool(PROMPT_POOL_SIZE)
+
+    workers = [MiningWorker(i, prompt_pool) for i in range(NUM_WORKERS)]
+    start_time = time.time()
 
     def shutdown(s, f):
         print("\n🛑 Shutting down workers...", flush=True)
@@ -125,7 +168,7 @@ def main():
     for w in workers:
         w.start()
 
-    threading.Thread(target=stats, args=(workers,), daemon=True).start()
+    threading.Thread(target=stats, args=(workers, start_time), daemon=True).start()
 
     # Keep main thread alive
     while True:
