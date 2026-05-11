@@ -236,9 +236,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # Start vLLM in background (not exec — we need to start the worker loop too)
+# Use Unix Domain Socket for internal communication (faster than TCP localhost)
+# Also bind TCP on port 8000 for health checks and external access
+VLLM_UDS="${PEARL_VLLM_UDS:-/tmp/vllm.sock}"
+if vllm serve --help 2>&1 | grep -q "\-\-uds"; then
+    echo "🔌 UDS supported — using $VLLM_UDS for internal comms"
+    VLLM_SOCKET_ARGS="--uds $VLLM_UDS"
+    export PEARL_VLLM_URL="http+unix://${VLLM_UDS}/"
+else
+    echo "🔌 UDS not supported in this vLLM version — using TCP"
+    VLLM_SOCKET_ARGS="--host 0.0.0.0 --port 8000"
+    export PEARL_VLLM_URL="http://localhost:8000"
+fi
 vllm serve pearl-ai/Llama-3.3-70B-Instruct-pearl \
-    --host 0.0.0.0 \
-    --port 8000 \
+    $VLLM_SOCKET_ARGS \
     --max-model-len "$PEARL_MAX_MODEL_LEN" \
     --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.95}" \
     --enforce-eager \
@@ -257,7 +268,13 @@ VLLM_PID=$!
 # ============================================================
 echo "⏳ Waiting for vLLM to load model and become ready..."
 for i in $(seq 1 1800); do
-    if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+    # Health check: try UDS first, then TCP fallback
+    if [ -S "$VLLM_UDS" ]; then
+        HEALTH_OK=$(curl -s --unix-socket "$VLLM_UDS" http://localhost/health 2>/dev/null && echo "yes")
+    else
+        HEALTH_OK=$(curl -s http://localhost:8000/health 2>/dev/null && echo "yes")
+    fi
+    if [ -n "$HEALTH_OK" ]; then
         echo "✅ vLLM is ready! Starting mining worker..."
         break
     fi

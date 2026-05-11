@@ -101,6 +101,8 @@ COPY pearl_worker.py /app/pearl_worker.py
 RUN chmod +x /app/entrypoint.sh
 
 # Note: 'requests' is already installed as a vLLM dependency
+# Install requests-unixsocket for UDS support and transformers for pre-tokenization
+RUN /usr/local/venv/bin/pip install --no-cache-dir requests-unixsocket 2>/dev/null || true
 
 # Environment
 ENV PATH="/usr/local/venv/bin:${PATH}" \

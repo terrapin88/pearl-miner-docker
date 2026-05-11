@@ -26,8 +26,17 @@ import requests as req
 
 # --- Configuration ---
 # Use /v1/completions (not chat) — supports prompt_token_ids, less overhead
+# PEARL_VLLM_URL is set by entrypoint.sh (UDS or TCP depending on support)
 VLLM_BASE = os.environ.get("PEARL_VLLM_URL", "http://localhost:8000")
-VLLM_URL = f"{VLLM_BASE}/v1/completions"
+
+# Detect UDS mode from URL
+_USE_UDS = VLLM_BASE.startswith("http+unix://")
+if _USE_UDS:
+    _UDS_PATH = VLLM_BASE.replace("http+unix://", "").rstrip("/")
+    VLLM_URL = "http://localhost/v1/completions"  # URL path for UDS
+else:
+    VLLM_URL = f"{VLLM_BASE}/v1/completions"
+    _UDS_PATH = None
 MODEL = "pearl-ai/Llama-3.3-70B-Instruct-pearl"
 NUM_WORKERS = int(os.environ.get("PEARL_WORKERS", "64"))
 MAX_TOKENS = int(os.environ.get("PEARL_MAX_TOKENS", "1"))
@@ -128,13 +137,25 @@ class MiningWorker(threading.Thread):
         self.pretokenized = pretokenized
         # Connection pooling with keep-alive
         self.session = req.Session()
-        adapter = req.adapters.HTTPAdapter(
-            pool_connections=1,
-            pool_maxsize=1,
-            max_retries=0,
-        )
-        self.session.mount("http://", adapter)
-        self.session.mount("http+unix://", adapter)
+        if _USE_UDS:
+            # For UDS, use urllib3 UnixHTTPConnectionPool via requests adapter
+            try:
+                import requests_unixsocket
+                self.session = requests_unixsocket.Session()
+                # requests_unixsocket uses http+unix:// URLs with URL-encoded path
+                import urllib.parse
+                encoded_path = urllib.parse.quote(_UDS_PATH, safe="")
+                self._url = f"http+unix://{encoded_path}/v1/completions"
+            except ImportError:
+                # Fallback: use standard urllib3 with custom connection
+                print(f"[W{self.wid}] requests_unixsocket not available, using TCP fallback", flush=True)
+                self._url = "http://localhost:8000/v1/completions"
+                adapter = req.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+                self.session.mount("http://", adapter)
+        else:
+            self._url = VLLM_URL
+            adapter = req.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+            self.session.mount("http://", adapter)
 
     def _build_payload(self, prompt):
         """Build the request payload."""
@@ -173,7 +194,7 @@ class MiningWorker(threading.Thread):
                 payload = self._build_payload(prompt)
 
                 r = self.session.post(
-                    VLLM_URL,
+                    self._url,
                     json=payload,
                     timeout=REQUEST_TIMEOUT,
                 )
@@ -232,7 +253,7 @@ def stats(workers, start_time):
 
 def main():
     print(f"🐚 Pearl Mining Worker v3 — {NUM_WORKERS} threads", flush=True)
-    print(f"   Endpoint: {VLLM_URL}", flush=True)
+    print(f"   Endpoint: {VLLM_BASE} ({'UDS' if _USE_UDS else 'TCP'})", flush=True)
     print(f"   max_tokens={MAX_TOKENS}, word_list={WORD_LIST_LENGTH}", flush=True)
     print(f"   Pre-tokenization: {'enabled' if USE_PRETOKENIZED else 'disabled'}", flush=True)
 
