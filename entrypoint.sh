@@ -253,6 +253,7 @@ vllm serve pearl-ai/Llama-3.3-70B-Instruct-pearl \
     --max-model-len "$PEARL_MAX_MODEL_LEN" \
     --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.95}" \
     --enforce-eager \
+    --max-num-partial-prefills "${PEARL_MAX_PARTIAL_PREFILLS:-32}" \
     --data-parallel-size "$DP_SIZE" \
     --no-enable-prefix-caching \
     --max-num-seqs "${PEARL_MAX_SEQS:-256}" \
