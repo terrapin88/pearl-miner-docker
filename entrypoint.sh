@@ -197,8 +197,11 @@ else
     GPU_COUNT=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 fi
 
-# Set data parallelism based on GPU count
-DP_SIZE="${PEARL_DP_SIZE:-$GPU_COUNT}"
+# Set tensor parallelism (GPUs per engine) — default 1
+TP_SIZE="${PEARL_TP_SIZE:-1}"
+
+# Set data parallelism: total GPUs / tensor parallel size
+DP_SIZE="${PEARL_DP_SIZE:-$((GPU_COUNT / TP_SIZE))}"
 
 # Critical: disable deep gemm (conflicts with Pearl's NoisyGEMM) — set earlier in GPU tuning
 
@@ -225,7 +228,9 @@ export PEARL_WORD_LIST
 
 echo "🚀 Starting vLLM inference server..."
 echo "   Model: pearl-ai/Llama-3.3-70B-Instruct-pearl"
+echo "   Tensor Parallel Size: $TP_SIZE"
 echo "   Data Parallel Size: $DP_SIZE"
+echo "   Effective engines: $DP_SIZE × ${TP_SIZE}-GPU"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Mining will begin once chain is synced + vLLM ready."
@@ -250,6 +255,7 @@ else
 fi
 vllm serve pearl-ai/Llama-3.3-70B-Instruct-pearl \
     $VLLM_SOCKET_ARGS \
+    --tensor-parallel-size "$TP_SIZE" \
     --max-model-len "$PEARL_MAX_MODEL_LEN" \
     --gpu-memory-utilization "${PEARL_GPU_UTIL:-0.95}" \
     --enforce-eager \
